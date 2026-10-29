@@ -1,0 +1,17 @@
+<div class="d-block border-bottom table-responsive">
+  <h4>
+    @if (cart?.Proposald?.Id) {
+      <span>{{cart?.Proposald?.Name}} / {{'COMMON.EDIT_LINE_ITEMS' | translate }}</span>
+    } @else {
+      <span>{{'MANAGE_CART.CART_TABLE.ITEMS_IN_YOURCART' | translate }}</span>
+    }
+  </h4>
+  <table class="table animated fadeIn">
+    <tbody>
+      @for (item of tableItems; track item.parent?.Id; let i = $index) {
+        <apt-line-item-table-row [index]="i" [cart]="cart"
+          [parent]="item.parent" [children]="item.children" [editableFields]="false"></apt-line-item-table-row>
+      }
+    </tbody>
+  </table>
+</div>

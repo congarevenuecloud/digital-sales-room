@@ -1,0 +1,87 @@
+import { NgModule } from '@angular/core';
+import { HttpClient, HTTP_INTERCEPTORS, HttpInterceptor, HttpRequest, HttpHandler, HttpEvent } from '@angular/common/http';
+import { AbstractSecurityStorage, AuthInterceptor, AuthModule, OpenIdConfiguration, StsConfigHttpLoader, StsConfigLoader } from 'angular-auth-oidc-client';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { AuthOptions } from '@congarevenuecloud/core';
+import { StorageHandlerService } from '@congarevenuecloud/ecommerce';
+import { config$ } from '../../main';
+import { AuthorizationGuard } from './auth.guard';
+import { AppComponent } from '../app.component';
+
+export const httpLoaderFactory = () => {
+  const authOptions$: Observable<OpenIdConfiguration> = config$.pipe(
+    map((authOptions: AuthOptions) => {
+      let redirectUri = window.location.origin + window.location.pathname;
+      if (redirectUri.endsWith('/')) {
+        redirectUri = redirectUri.slice(0, -1);
+      }
+      return {
+        // Strip trailing slash so authority matches the OIDC issuer.
+        authority: authOptions.authEndpoint?.replace(/\/+$/, ''),
+        redirectUrl: redirectUri,
+        postLogoutRedirectUri: redirectUri,
+        clientId: authOptions.spaClientId,
+        scope: 'openid profile offline_access',
+        responseType: 'code',
+        secureRoutes: [authOptions.apiEndpoint, authOptions.authEndpoint],
+        silentRenew: true,
+        useRefreshToken: true,
+        ignoreNonceAfterRefresh: true,
+        automaticSilentRenew: true,
+        disableIdTokenValidation: true,
+        autoUserInfo: false,
+        // Host proxy 301 appends a trailing slash, so detect callback by code/state params, not a strict redirectUrl match (state/nonce/PKCE still validated).
+        checkRedirectUrlWhenCheckingIfIsCallback: false,
+        // Storefronts federate to a shared IdP by design (perf→qa, preview→prod), so the discovery issuer host differs from the configured authority.
+        strictIssuerValidationOnWellKnownRetrievalOff: true,
+        customParamsAuthRequest: {
+          acr_values: 'idp:local'
+        }
+      } as OpenIdConfiguration;
+    })
+  );
+  return new StsConfigHttpLoader(authOptions$);
+};
+
+@NgModule({
+  imports: [
+    AuthModule.forRoot({
+      loader: {
+        provide: StsConfigLoader,
+        useFactory: httpLoaderFactory,
+        deps: [HttpClient],
+      },
+    })
+  ],
+  providers: [
+    {
+      provide: AbstractSecurityStorage,
+      useClass: StorageHandlerService
+    },
+    {
+      provide: HTTP_INTERCEPTORS,
+      useClass: AuthInterceptor,
+      multi: true
+    },
+    {
+      provide: HTTP_INTERCEPTORS,
+      useClass: class implements HttpInterceptor {
+        intercept(request: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
+          if (request.url.includes('/assets/i18n/')) {
+            const clonedRequest = request.clone({
+              setHeaders: { Authorization: '' }
+            });
+            return next.handle(clonedRequest);
+          }
+          return next.handle(request);
+        }
+      },
+      multi: true
+    },
+    AuthorizationGuard
+  ],
+  exports: [AuthModule],
+  bootstrap: [AppComponent]
+})
+export class AuthConfigModule { }

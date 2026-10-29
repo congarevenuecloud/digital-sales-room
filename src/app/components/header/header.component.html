@@ -1,0 +1,84 @@
+<div class="navbar navbar-light bg-light border-bottom py-0 px-3">
+  <div class="d-flex align-items-center">
+    @if (storefront$ | async; as storefront) {
+      <button class="navbar-brand btn btn-link p-0 me-2"
+        [routerLink]="getLogoLink()">
+        @if (storeLogo$ | async; as storeLogo) {
+          <img class="ps-2" [src]="storeLogo | image" />
+        } @else {
+          <img class="ps-2" src="./assets/images/logo.png" height="24" />
+        }
+      </button>
+      <span class="sf-label mb-0 d-lg-block d-md-block d-sm-none d-none">
+        {{storefront?.Name}}
+      </span>
+    } @else {
+      <button class="navbar-brand btn btn-link p-0 me-2"
+        [routerLink]="getLogoLink()">
+        <img class="ps-2" src="./assets/images/logo.png" height="24" />
+      </button>
+    }
+  </div>
+
+  <div class="actions d-flex align-items-center m-0">
+    @if ((storefront$ | async) && (showSearch$ | async)) {
+      <apt-product-search [typeAheadLimit]="7"></apt-product-search>
+    }
+    @if (showMiniCart$ | async) {
+      <apt-mini-cart></apt-mini-cart>
+      <apt-cr-constraint-icon class="d-block position-relative"></apt-cr-constraint-icon>
+    }
+
+    @if (user$ | async; as user) {
+      <div class="d-flex user-action flex-column text-primary align-items-flex-start exclude-border ps-2">
+        <strong>
+          @if (user?.Alias !== 'guest') {
+            <font size="1">{{ 'COMMON.WELCOME_MESSAGE' | translate: {userName: user?.FirstName} }}</font>
+          }
+        </strong>
+        <strong>
+          @if (user?.Alias === 'guest') {
+            <font size="1">{{ 'COMMON.GUEST_WELCOME_MESSAGE' | translate }}</font>
+          }
+        </strong>
+        <div class="dropdown">
+          <button class="btn btn-link dropdown-toggle fw-bold p-0 m-0"
+            (click)="toggleMyAccountDropdown($event)" #btnDropdown>
+            {{'COMMON.ACCOUNT' | translate}}
+          </button>
+          <div class="dropdown-menu dropdown-menu-end mt-1" aria-labelledby="dropdownMenuButton" id="accountMenu"
+            [ngClass]="showAccountHome ? 'show' : ''">
+            @if (user?.Alias !== 'guest') {
+              <div class="m-2">
+                <div dropdown-item class="d-flex m-2 pb-2">
+                  <h4 class="user-avatar d-flex justify-content-center align-items-center bg-secondary rounded-circle text-white p-2">
+                    {{userInitials}}</h4>
+                  <div class="ms-3 text-truncate">
+                    <h5 class="my-0">{{user?.FirstName}}</h5>
+                    <h5 class="my-0">{{user?.LastName}}</h5>
+                    <div>{{user?.Title}}</div>
+                  </div>
+                </div>
+                <div class="nav flex-column nav-pills ps-3">
+                  <a class="pt-3" href="javascript:void(0)" (click)="doLogout()">
+                    <i class="fas fa-sign-out-alt pe-2"></i>
+                    {{'HEADER.LOG_OUT' | translate}}
+                  </a>
+                </div>
+              </div>
+            } @else {
+              <div class="dropdown-item">
+                <span>{{ 'HEADER.GUEST_BROWSING_MESSAGE' | translate }}</span><br>
+              </div>
+              <div class="dropdown-item">
+                <button class="d-flex btn btn-primary btn-raised w-100" (click)="login()">
+                  {{ 'HEADER.SIGN_IN' | translate }}
+                </button>
+              </div>
+            }
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+</div>
