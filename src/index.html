@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Digital Sales Room</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/x-icon" href="assets/icons/favicon-conga.ico">
+</head>
+
+<body>
+  <app-root></app-root>
+  <script>
+    const match = window.location.pathname.match(/^\/dsr\/([^\/]+)\/?/);
+    if (match) {
+      const decodedStorefront = decodeURIComponent(match[1]);
+      const encodedBase = "/dsr/" + encodeURIComponent(decodedStorefront) + "/";
+      document.querySelector("base").setAttribute("href", encodedBase);
+    }
+  </script>
+</body>
+
+</html>

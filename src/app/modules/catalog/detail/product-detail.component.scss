@@ -1,0 +1,24 @@
+:host {
+  display: block;
+}
+
+.clamp-2-lines {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+apt-output-field {
+  line-height: 1 !important;
+  color: #495057;
+}
+
+.product-description {
+  color: #495057;
+}
+
+.product-quantity {
+  width: 10rem;
+}

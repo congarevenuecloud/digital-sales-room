@@ -1,0 +1,60 @@
+@use "sass:math";
+@import "variables";
+
+// Keep the user-initials avatar a perfect circle regardless of content width.
+.user-avatar {
+  width: 3rem;
+  height: 3rem;
+  flex: 0 0 3rem;
+  padding: 0 !important;
+  margin: 0;
+}
+
+.navbar-brand {
+  img {
+    max-height: 2rem;
+  }
+  
+  // Disabled state for collaborative mode
+  &.cursor-default {
+    cursor: default !important;
+    pointer-events: none;
+    opacity: 0.9;
+    
+    &:hover {
+      text-decoration: none;
+    }
+  }
+}
+
+.navbar {
+  transition: margin 300ms;
+  transition: height 300ms;
+  z-index: 1031;
+}
+
+.navbar-brand > img {
+  transition: 0.45s;
+  &.scale {
+    transform: scale(0.725);
+  }
+}
+
+.modal.show .modal-dialog.menu {
+  left: 0;
+}
+.modal-dialog.menu {
+  transition: left 300ms;
+  margin: -1px 0 0 0;
+  left: -20rem;
+  top: 0rem;
+  width: 20rem;
+  .modal-content {
+    height: 100vh;
+  }
+}
+
+.account-info.show {
+  min-width: 20rem;
+  left: inherit;
+}

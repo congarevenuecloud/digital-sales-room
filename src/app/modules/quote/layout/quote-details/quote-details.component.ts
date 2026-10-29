@@ -1,0 +1,931 @@
+import { Component, OnInit, ViewChild, TemplateRef, NgZone, ChangeDetectorRef, OnDestroy, ViewEncapsulation, ElementRef, Inject, Renderer2 } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
+import { DOCUMENT } from '@angular/common';
+import { TranslateService, } from '@ngx-translate/core';
+import { filter, map, take, switchMap, catchError } from 'rxjs/operators';
+import { get, set, first, map as _map, isEmpty, join, split, trim, isNil } from 'lodash';
+import { Observable, of, BehaviorSubject, Subscription, combineLatest, forkJoin } from 'rxjs';
+import { BsModalService, ModalOptions } from 'ngx-bootstrap/modal';
+import { BsModalRef } from 'ngx-bootstrap/modal';
+import { FilterOperator, PlatformConstants, AObject } from '@congarevenuecloud/core';
+import {
+  UserService, QuoteService, Quote, Order, OrderService, AttachmentService,
+  AttachmentDetails, ProductInformationService, ItemGroup, EmailService, LineItemService, EmailRequestPayload,
+  CartService, Cart, DateFormat, FieldFilter, ContactService, CollaborationRequestService, CollaborationRequest, CollaborationAccessType, CollaborationAuthenticationType, CollaborationStatus, StorefrontService, DetailActionArea, DetailActionSection, DetailActionSet, DetailAction, DisplayColumn, DisplayColumnSection
+} from '@congarevenuecloud/ecommerce';
+import { ExceptionService, LookupOptions, ToasterPosition, FileOutput, AddCommentsConfig, ViewCommentsConfig, DisplayColumnService, CartItemView } from '@congarevenuecloud/elements';
+import { DsrService } from '../../../../services/dsr.service';
+import { DEFAULT_DETAIL_ACTIONS } from '../../../../services/detail-actions.config';
+
+@Component({
+  standalone: false,
+  selector: 'app-quote-details',
+  templateUrl: './quote-details.component.html',
+  styleUrls: ['./quote-details.component.scss'],
+  encapsulation: ViewEncapsulation.None
+})
+export class QuoteDetailsComponent implements OnInit, OnDestroy {
+
+  quoteLineItems$: BehaviorSubject<Array<ItemGroup>> = new BehaviorSubject<Array<ItemGroup>>(null);
+  attachmentList$: BehaviorSubject<Array<AttachmentDetails>> = new BehaviorSubject<Array<AttachmentDetails>>(null);
+  order$: Observable<Order>;
+  quote
+
+  @ViewChild('attachmentSection') attachmentSection: ElementRef;
+  @ViewChild('fileInput') fileInput: ElementRef;
+
+  intimationModal: BsModalRef;
+
+  supportedFileTypes: string;
+
+  editLoader = false;
+
+  acceptLoader = false;
+
+  rejectLoader = false;
+
+  attachmentsLoader = false;
+
+  finalizeLoader = false;
+
+  quoteGenerated: boolean = false;
+
+  attachemntSubscription: Subscription;
+
+  quoteSubscription: Subscription[] = [];
+
+  showPresentTemplate = false;
+
+  showReqChangesModal = false;
+
+  showViewCommentsComponent = true;
+
+  viewCommentsConfig: ViewCommentsConfig = {
+    modalOptions: { 'class': 'modal-lg', 'backdrop': 'static', 'keyboard': true },
+    showTypeFilter: true,
+    pageSize: 10,
+    enablePagination: true,
+    dateFormat: 'ShortDateTimePattern'
+  };
+
+  requestChangesConfig: AddCommentsConfig;
+
+  addCommentsConfig: AddCommentsConfig = {
+    showCommentType: true,
+  }
+
+  quoteStatusSteps: Array<string> = [
+    'STATUS.DRAFT',
+    'STATUS.APPROVED',
+    'STATUS.GENERATED',
+    'STATUS.PRESENTED',
+    'STATUS.ACCEPTED',
+  ];
+
+  quoteStatusMap: Record<string, { Key: string; DisplayText: string }> = {
+    Draft: { Key: 'Draft', DisplayText: 'STATUS.DRAFT' },
+    'Approval Required': {
+      Key: 'Approval Required',
+      DisplayText: 'STATUS.APPROVAL_REQUIRED',
+    },
+    'In Review': { Key: 'In Review', DisplayText: 'STATUS.IN_REVIEW' },
+    Approved: { Key: 'Approved', DisplayText: 'STATUS.APPROVED' },
+    Generated: { Key: 'Generated', DisplayText: 'STATUS.GENERATED' },
+    Presented: { Key: 'Presented', DisplayText: 'STATUS.PRESENTED' },
+    Accepted: { Key: 'Accepted', DisplayText: 'STATUS.ACCEPTED' },
+    Denied: { Key: 'Denied', DisplayText: 'STATUS.DENIED' },
+  };
+
+  isLoggedIn: boolean;
+  collaborationRequest: CollaborationRequest = null;
+  isRecordOwner: boolean = false;
+  currentUserId: string;
+  isAnonymous: boolean = false;
+  canManageLineItems: boolean = true;
+  canEditQuoteFields: boolean = true;
+  canShowCollaborationActions: boolean = true;
+
+  @ViewChild('intimationTemplate') intimationTemplate: TemplateRef<any>;
+
+  lookupOptions: LookupOptions = {
+    primaryTextField: 'Name',
+    secondaryTextField: 'Email',
+    fieldList: ['Id', 'Name', 'Email']
+  };
+
+  isPrivate: boolean = false;
+  maxFileSizeLimit = 29360128;
+  cartRecord: Cart = new Cart();
+  // Flag used to toggle the content visibility when the list of fields exceeds two rows of the summary with show more or show less icon
+  isExpanded: boolean = false;
+  quoteStatusLabelMap: Record<string, string> = {};
+  quoteStatusStepsLabels: Array<string> = [];
+  acceptQuoteEmailTemplateName = 'DC Accept Quote Default email template';
+  rejectQuoteEmailTemplateName = 'DC Reject Quote Default email template';
+
+  // Action configuration from the displayActions API, falling back to the built-in defaults.
+  actions: DetailActionSet = new DetailActionSet(DetailActionSection.Quote, DEFAULT_DETAIL_ACTIONS, () => ({
+    stage: get(this.quote, 'ApprovalStage'),
+    isLoggedIn: this.isLoggedIn,
+    hasCollaboration: !isNil(this.collaborationRequest)
+  }));
+
+  // Placement buckets exposed to the template.
+  readonly actionArea = DetailActionArea;
+
+  // Quote summary fields from the displayColumns API; empty keeps the built-in layout.
+  proposalColumns: Array<DisplayColumn> = [];
+
+  // Quote line item fields from the displayColumns API; null keeps the user's Edit Layout selection.
+  quoteLineItemColumns: Array<CartItemView> = null;
+
+  // Line item price rows from the displayColumns API; null keeps the built-in price rows.
+  priceColumns: Array<DisplayColumn> = null;
+
+  constructor(private activatedRoute: ActivatedRoute,
+    private quoteService: QuoteService,
+    private exceptionService: ExceptionService,
+    private modalService: BsModalService,
+    private orderService: OrderService,
+    private emailService: EmailService,
+    private attachmentService: AttachmentService,
+    private productInformationService: ProductInformationService,
+    private cdr: ChangeDetectorRef,
+    private ngZone: NgZone,
+    private userService: UserService,
+    private router: Router,
+    private cartService: CartService,
+    @Inject(DOCUMENT) private document: Document,
+    private renderer: Renderer2,
+    private translateService: TranslateService,
+    private collaborationService: CollaborationRequestService,
+    private contactService: ContactService,
+    private dsrService: DsrService,
+    private storefrontService: StorefrontService,
+    private displayColumnService: DisplayColumnService
+  ) { }
+
+  ngOnInit() {
+    // Clear DSR editing flag when landing on quote details page
+    // This handles cases where user discarded or finalized changes and returned here
+    if (this.dsrService.hasEditedLineItems()) {
+      this.dsrService.clearEditingLineItems();
+    }
+    
+    this.initializeTranslationsComments();
+    this.loadDisplayActions();
+    this.getQuote();
+    this.quoteSubscription.push(this.userService.isLoggedIn().pipe(switchMap((value: boolean) => {
+      this.isLoggedIn = value;
+      if (this.isLoggedIn)
+        return this.attachmentService.getSupportedAttachmentType();
+      else
+        return of(null);
+    }), take(1)
+    ).subscribe(data => {
+      this.supportedFileTypes = join(_map(split(data, ','), (item) => trim(item)), ', ');
+    }));
+    this.quoteSubscription.push(
+      this.translateService
+        .stream(this.quoteStatusSteps)
+        .subscribe((translations) => {
+          this.quoteStatusStepsLabels = this.quoteStatusSteps.map(
+            (key) => translations[key]
+          );
+        })
+    );
+    this.translateQuoteStatusLabels(this.quoteStatusMap);
+  }
+
+  /**
+   * Held outside `quoteSubscription` because `getQuote()` resets that list, which would otherwise
+   * cancel this request before its response arrives.
+   */
+  private displayConfigSubscription: Subscription;
+
+  // Loads the storefront column and action overrides for this page in a single pass.
+  private loadDisplayActions(): void {
+    this.displayConfigSubscription =
+      this.storefrontService.getStorefront().pipe(
+        take(1),
+        switchMap((storefront) => {
+          const flow = get(storefront, 'DefaultFlow') || 'system';
+          return combineLatest([
+            this.storefrontService.getStorefrontDisplayColumns(flow, get(storefront, 'Id')).pipe(catchError(() => of([]))),
+            this.storefrontService.getStorefrontDisplayActions(flow, get(storefront, 'Id')).pipe(catchError(() => of([]))),
+            this.userService.isGuest().pipe(take(1), catchError(() => of(false)))
+          ]);
+        }),
+        catchError(() => of<[Array<DisplayColumn>, Array<DetailAction>, boolean]>([[], [], false]))
+      ).subscribe(([columnsResponse, actionsResponse, isGuest]) => {
+        // Guests only lose the columns explicitly marked ShowForGuest false; a column that says
+        // nothing about guests stays visible, so an unconfigured storefront is unaffected.
+        const allCols: Array<DisplayColumn> = (columnsResponse ?? [])
+          .filter((c: DisplayColumn) => !isGuest || c.ShowForGuest !== false);
+
+        const proposalCols = this.columnsInSection(allCols, DisplayColumnSection.QuoteSummary);
+        if (proposalCols.length > 0) this.proposalColumns = proposalCols;
+
+        const quoteLineCols = this.columnsInSection(allCols, DisplayColumnSection.QuoteLineItem);
+        if (quoteLineCols.length > 0) {
+          this.quoteLineItemColumns = quoteLineCols.map((c: DisplayColumn) => ({
+            fieldName: c.FieldName,
+            label: c.Label,
+            sequence: c.Sequence ?? 0,
+            isSelected: true,
+            isEditable: c.IsEditable ?? false
+          }));
+        }
+
+        const priceCols = this.columnsInSection(allCols, DisplayColumnSection.LineItemPrice);
+        if (priceCols.length > 0) this.priceColumns = priceCols;
+
+        this.actions.applyOverrides(actionsResponse);
+        this.cdr.detectChanges();
+      });
+  }
+
+  // Returns the configured columns for a section, ordered by Sequence.
+  private columnsInSection(allCols: Array<DisplayColumn>, section: string): Array<DisplayColumn> {
+    return allCols
+      .filter((c: DisplayColumn) => c.Section === section)
+      .sort((a, b) => (a.Sequence ?? 0) - (b.Sequence ?? 0));
+  }
+
+  // Template-callable wrapper over DisplayColumnService.recordForColumn.
+  recordForColumn(record: AObject, fieldName: string): AObject {
+    return this.displayColumnService.recordForColumn(record, fieldName);
+  }
+
+  // Returns the leaf field name for a configured column.
+  fieldForColumn(fieldName: string): string {
+    return this.displayColumnService.fieldForColumn(fieldName);
+  }
+
+  // Template-callable wrapper over DisplayColumnService.summaryFieldValue.
+  summaryFieldValue(emitted: AObject, fieldName: string): any {
+    return this.displayColumnService.summaryFieldValue(emitted, fieldName);
+  }
+
+  // Mirrors the per-action collaboration guards in the template; unknown actions default to visible
+  // so the toggle is never hidden over an action that actually renders.
+  isActionVisible(action: DetailAction): boolean {
+    switch (action.ActionName) {
+      case 'RequestChanges':
+      case 'Reject':
+        return this.canShowCollaborationActions;
+      case 'AcceptQuote':
+        return this.canShowCollaborationActions && get(this.quote, 'Items.length', 0) > 0;
+      default:
+        return true;
+    }
+  }
+
+  // True when any available action across the given areas will render, so the ⋮ toggle is not shown
+  // over an empty menu.
+  hasVisibleActions(...areas: Array<string>): boolean {
+    return this.actions.inAreas(...areas).some(action => this.isActionVisible(action));
+  }
+
+  // Tracks configured columns by field name so the summary does not re-render on every change.
+  trackByFieldName(_index: number, col: DisplayColumn): string {
+    return col.FieldName;
+  }
+
+  private initializeTranslationsComments(): void {
+    const commentTranslationKeys = [
+      'COMMENTS.SEND_REQUEST',
+      'COMMENTS.ENTER_COMMENTS',
+      'COMMON.CANCEL'
+    ];
+
+    this.quoteSubscription.push(
+      this.translateService.stream(commentTranslationKeys).subscribe(translations => {
+        this.requestChangesConfig = {
+          modalOptions: { 'class': 'modal-md', 'backdrop': 'static', 'keyboard': true },
+          showCommentType: true,
+          submitButtonText: translations['COMMENTS.SEND_REQUEST'],
+          cancelButtonText: translations['COMMON.CANCEL'],
+          placeholder: translations['COMMENTS.ENTER_COMMENTS']
+        };
+      })
+    );
+  }
+
+  getQuote() {
+    this.resetQuoteSubscriptions();
+    this.quoteSubscription.push(this.activatedRoute.params
+      .pipe(
+        filter(params => get(params, 'id') != null),
+        map(params => get(params, 'id')),
+        switchMap(quoteId => {
+          // Store quote ID in localStorage to establish DSR entry point.
+          // Catalog and cart pages use this to verify the user arrived via quote detail page.
+          this.dsrService.setQuoteId(quoteId);
+          // Load collaboration request from cached state (already fetched by guard)
+          this.loadCollaborationRequestFromState(quoteId);
+          return this.dsrService.ensureDsrPriceList(quoteId).pipe(
+            switchMap(() => this.quoteService.getQuoteById(quoteId))
+          );
+        }),
+        switchMap((quote) => {
+          const priceListId = get(quote, 'PriceList.Id');
+          if (priceListId) {
+            localStorage.setItem(PlatformConstants.PRICELIST_ID, priceListId);
+          }
+          const quoteLineItems = LineItemService.groupItems(get(quote, 'Items'));
+          this.quoteLineItems$.next(quoteLineItems);
+
+          const firstLineItem = this.quoteLineItems$.value && this.quoteLineItems$.value.length > 0
+            ? first(this.quoteLineItems$.value)
+            : null;
+          const configId = firstLineItem ? get(firstLineItem, 'MainLine.Configuration.Id') : null;
+          if (configId) {
+            this.cartRecord.Id = configId;
+          }
+
+          const lineItemsObservable = isEmpty(quoteLineItems)
+            ? of(null)
+            : this.cartService.addAdjustmentInfoToLineItems(this.cartRecord?.Id);
+
+          return combineLatest([lineItemsObservable, of(quote)]);
+        }),
+        switchMap(([lineItems, quote]) => {
+          this.cartRecord.LineItems = lineItems;
+          this.cartRecord.BusinessObjectType = 'Proposal';
+          this.updateComputedProperties();
+          return this.updateQuoteValue(quote);
+        }),
+        take(1)
+      ).subscribe(() => {
+        // API callouts can resolve outside Angular's zone, so re-enter and force a
+        // check to render the quote as soon as the data is ready.
+        this.ngZone.run(() => this.cdr.detectChanges());
+      }));
+    this.getAttachments();
+  }
+
+  // TO DO:: output field need to handle update of buisnessObject
+  refreshQuote(fieldValue, quote, fieldName) {
+    set(quote, fieldName, fieldValue);
+    const quoteItems = get(quote, 'Items');
+    const payload = quote.strip(['Owner', 'Items', 'TotalCount', 'ResponseStatus']);
+    this.quoteSubscription.push(this.quoteService.updateQuote(quote.Id, payload).pipe(switchMap(c => this.updateQuoteValue(c))).subscribe(r => {
+      this.quote = r;
+      set(this.quote, 'Items', quoteItems);
+    }));
+  }
+
+  updateQuoteValue(quote: Quote): Observable<Quote> {
+    return this.quoteService.updateQuoteValue(quote).pipe(
+      take(1),
+      map((updatedQuote: Quote) => {
+        this.order$ = this.orderService.getOrderByQuote(get(updatedQuote, 'Id'));
+        this.quote = updatedQuote;
+        return updatedQuote;
+      })
+    );
+  }
+
+
+  acceptQuote(quoteId: string) {
+    this.acceptLoader = true;
+    this.quoteService.acceptQuote(quoteId).pipe(
+      take(1),
+      switchMap(res => this.updateCollaborationRequestIfNeeded(res, CollaborationStatus.Accepted)),
+      switchMap(res => {
+        if (res) {
+          this.acceptLoader = false;
+          // Feature flag check for email notifications
+          return this.shouldSendEmailFromUI();
+        }
+        this.acceptLoader = false;
+        return of(null); // Return null to indicate failure
+      })
+    ).subscribe(
+      enableEmailsFromDCUI => {
+        if (enableEmailsFromDCUI === null) {
+          // Quote acceptance failed, don't show modal or send email
+          return;
+        }
+        if (enableEmailsFromDCUI) {
+          this.sendEmailWithTemplate(this.acceptQuoteEmailTemplateName);
+        }
+        const ngbModalOptions: ModalOptions = {
+          backdrop: 'static',
+          keyboard: false
+        };
+        this.ngZone.run(() => {
+          this.intimationModal = this.modalService.show(this.intimationTemplate, ngbModalOptions);
+        });
+      },
+      err => {
+        this.acceptLoader = false;
+      }
+    );
+  }
+
+  private updateCollaborationRequestIfNeeded(originalValue: boolean, status: CollaborationStatus): Observable<boolean> {
+    if (originalValue && this.collaborationRequest) {
+      const payload = {
+        Id: this.collaborationRequest.Id,
+        Name: this.collaborationRequest.Name,
+        Status: status
+      };
+      return this.collaborationService.updateCollaborationRequest(this.collaborationRequest.Id, payload).pipe(
+        take(1),
+        map(() => originalValue),
+        catchError(() => of(originalValue))
+      );
+    }
+    return of(originalValue);
+  }
+
+  // TO DO : Remove this method once email sending logic is moved to backend
+  private shouldSendEmailFromUI(): Observable<boolean> {
+    return this.storefrontService.getConfigSettings().pipe(
+      take(1),
+      catchError(() => of({ enableEmailsFromDCUI: true })),
+      map(configSettings => get(configSettings, 'enableEmailsFromDCUI', true))
+    );
+  }
+
+  sendEmailWithTemplate(emailTemplateName: string) {
+    const userIds = [get(this.quote, 'Owner.Id'), get(this.quote, 'Requestor.Id')]
+      .filter(id => !isNil(id));
+    
+    const getUsersObservable = userIds.length > 0 
+      ? this.userService.isGuest().pipe(
+          switchMap(isGuest => 
+            isGuest ? of([]) : this.userService.getUsers([{
+              field: 'Id',
+              value: userIds.join(","),
+              filterOperator: userIds.length > 1 ? FilterOperator.IN : FilterOperator.EQUAL
+            }])
+          )
+        )
+      : of([]);
+
+    forkJoin([
+      getUsersObservable,
+      this.emailService.getEmailTemplateByName(emailTemplateName),
+      this.contactService.getContactById(get(this.quote, 'PrimaryContact.Id'))
+    ]).pipe(
+      take(1),
+      switchMap(([users, emailTemplate, primaryContact]: any) => {
+
+        const emailWrappers = users.map(user => {
+          return {
+            EmailTemplateParameters: {
+              ObjectName: "Proposal",
+              RecordId: get(this.quote, 'Id'),
+              TemplateData: {
+                ProposalPageRoute: `proposals/${this.quote.Id}`,
+                RecipientName: get(user, 'Name')
+              }
+            },
+            EmailParameters: {
+              To: [{
+                Address: get(user, 'Email'),
+                DisplayName: get(user, 'Name')
+              }]
+            }
+          };
+        });
+
+        if (!isNil(primaryContact) && !isEmpty(primaryContact)) {
+          emailWrappers.push({
+            EmailTemplateParameters: {
+              ObjectName: "Proposal",
+              RecordId: get(this.quote, 'Id'),
+              TemplateData: {
+                ProposalPageRoute: `proposals/${this.quote.Id}`,
+                RecipientName: get(primaryContact, 'Name')
+              }
+            },
+            EmailParameters: {
+              To: [{
+                Address: get(primaryContact, 'Email'),
+                DisplayName: get(primaryContact, 'Name')
+              }]
+            }
+          });
+        }
+
+        // Guard check: only send email if there are recipients
+        if (isEmpty(emailWrappers)) {
+          return of(false);
+        }
+
+        const emailRequestPayload: EmailRequestPayload = {
+          EmailTemplateId: emailTemplate.Id,
+          EmailRequestWrappers: emailWrappers
+        };
+
+        return this.emailService.sendEmailByTemplate(emailRequestPayload);
+      })
+    ).subscribe(() => { });
+  }
+
+  rejectQuote(quoteId: string) {
+    this.rejectLoader = true;
+    this.quoteService.rejectQuote(quoteId).pipe(
+      take(1),
+      switchMap(() => this.updateCollaborationRequestIfNeeded(true, CollaborationStatus.Cancelled)),
+      switchMap(() => {
+        this.getQuote();
+        // Feature flag check for email notifications
+        return this.shouldSendEmailFromUI();
+      })
+    ).subscribe(
+      {
+        next: (enableEmailsFromDCUI) => {
+          if (enableEmailsFromDCUI) {
+            this.sendEmailWithTemplate(this.rejectQuoteEmailTemplateName);
+          }
+        },
+        complete: () => {
+          this.rejectLoader = false;
+        }
+      });
+  }
+
+  closeModal() {
+    this.intimationModal.hide();
+    this.getQuote();
+  }
+
+  editQuoteItems(quote: Quote) {
+    this.editLoader = true;
+    // Persist the quote's pricelist before converting to a cart. The conversion
+    // reprices the cart, and pricing requires the PriceListId to already be set;
+    // otherwise the server rejects the request as missing the pricelist.
+    this.persistEditPriceList();
+    if (!isEmpty(get(quote, 'Items'))) {
+      this.showProcessingOverlay();
+      this.quoteService.convertQuoteToCart(quote).pipe(take(1)).subscribe(value => {
+        set(value, 'Proposald', this.quote);
+        this.hideProcessingOverlay();
+        this.navigateToCartBasedOnAccessType();
+      },
+        err => {
+          this.hideProcessingOverlay();
+          this.exceptionService.showError(err);
+          this.editLoader = false;
+        })
+    } else {
+      this.addLineItemsToQuote(quote);
+    }
+  }
+
+  addLineItemsToQuote(quote: Quote) {
+    this.editLoader = true;
+    // Persist the pricelist up front here too, before the cart is created from the quote.
+    this.persistEditPriceList();
+    this.cartService.createCartFromQuote(quote.Id).pipe(take(1)).subscribe(value => {
+      set(value, 'Proposald', this.quote);
+      this.navigateToCartBasedOnAccessType();
+    },
+      err => {
+        this.exceptionService.showError(err);
+        this.editLoader = false;
+      })
+  }
+
+  private navigateToCartBasedOnAccessType(): void {
+    const accessType = get(this.collaborationRequest, 'AccessType');
+    
+    // Set pricelist and editing flag for FullEdit and RestrictedEdit access types
+    if (accessType === CollaborationAccessType.FullEdit || accessType === CollaborationAccessType.RestrictedEdit) {
+      // Idempotent: re-affirm the pricelist so it survives the round trip.
+      this.persistEditPriceList();
+      this.dsrService.setEditingLineItems();
+    }
+
+    // RestrictedEdit and FullEdit users both navigate to the active cart.
+    this.ngZone.run(() => this.router.navigate(['/carts', 'active']));
+  }
+
+  /**
+   * Persists the quote's PriceList id for FullEdit/RestrictedEdit users. Must run
+   * before any edit flow that reprices the cart, else pricing is rejected as
+   * missing the pricelist.
+   */
+  private persistEditPriceList(): void {
+    const accessType = get(this.collaborationRequest, 'AccessType');
+    if (accessType === CollaborationAccessType.FullEdit || accessType === CollaborationAccessType.RestrictedEdit) {
+      const priceListId = get(this.quote, 'PriceList.Id');
+      if (priceListId) {
+        localStorage.setItem(PlatformConstants.PRICELIST_ID, priceListId);
+      }
+    }
+  }
+
+  finalizeQuote(quoteId: string) {
+    this.finalizeLoader = true;
+    this.quoteService.finalizeQuote(quoteId).pipe(take(1)).subscribe(
+      res => {
+        if (res) {
+          this.finalizeLoader = false;
+          this.getQuote();
+        }
+      },
+      err => {
+        this.finalizeLoader = false;
+      }
+    );
+  }
+
+  onGenerateQuote() {
+    if (this.attachmentSection) this.attachmentSection.nativeElement.scrollIntoView({ behavior: 'smooth' });
+    let obsv$;
+    if (get(this.quote, 'ApprovalStage') == 'Draft') {
+      const payload = { 'ApprovalStage': 'Generated', 'ProposalName': get(this.quote, 'Name') };
+      obsv$ = this.quoteService.updateQuote(this.quote.Id, payload as Quote);
+    } else {
+      obsv$ = of(null);
+    }
+    
+    // Feature flag check for email notifications
+    this.shouldSendEmailFromUI().pipe(
+      take(1)
+    ).subscribe(enableEmailsFromDCUI => {
+      
+      if (enableEmailsFromDCUI) {
+        combineLatest([this.emailService.getEmailTemplateByName('DC Quote generate-document Template'), obsv$]).pipe(
+          switchMap(result => {
+            return first(result) ? this.emailService.sendEmailNotificationWithTemplate(get(first(result), 'Id'), this.quote, get(this.quote.PrimaryContact, 'Id')) : of(null)
+          }), take(1)).subscribe(() => {
+            this.getQuote();
+          });
+      } else {
+        obsv$.pipe(take(1)).subscribe(() => {
+          this.getQuote();
+        });
+      }
+    });
+    
+    this.quoteGenerated = true;
+  }
+
+  showPresentTemplateFun() {
+    this.showPresentTemplate = true;
+  }
+
+  onPresentDoc(obj: any) {
+    this.showPresentTemplate = !(obj.onDocumentPage);
+
+    if (obj.isPresentDocCompleted) {
+      let obsv$;
+      if (get(this.quote, 'ApprovalStage') != 'Presented') {
+        const payload = { 'ApprovalStage': 'Presented' };
+        obsv$ = this.quoteService.updateQuote(this.quote.Id, payload as Quote);
+      } else {
+        obsv$ = of(null);
+      }
+      obsv$.pipe(take(1)).subscribe(() => {
+        this.getQuote();
+      });
+    }
+  }
+
+
+  getAttachments() {
+    if (this.attachemntSubscription) this.attachemntSubscription.unsubscribe();
+    this.attachemntSubscription = this.activatedRoute.params
+      .pipe(
+        switchMap(params => this.attachmentService.getAttachments(get(params, 'id'), 'proposal'))
+      ).subscribe((attachments: Array<AttachmentDetails>) => this.ngZone.run(() => this.attachmentList$.next(attachments)));
+  }
+
+  getFileType(fileType: string): string {
+    return fileType.split('/')[1];
+  }
+
+
+  uploadAttachments(fileInput: FileOutput) {
+    this.attachmentsLoader = true;
+    const fileList = fileInput.files;
+    this.isPrivate = fileInput.visibility;
+    // To control the visibility of files, pass the additional field "IsPrivate_c" as part of the customProperties when calling uploadMultipleAttachments.
+    // You must include "IsPrivate_c" or any other custom fields passed as method parameters to the DocumentMetadata object. For more details, please refer to SDK/product documentation.
+    this.attachmentService.uploadMultipleAttachments(fileList, this.quote.Id, 'Proposal', {
+      IsPrivate_c: this.isPrivate
+    }).pipe(take(1)).subscribe(res => {
+      this.getAttachments();
+      this.attachmentsLoader = false;
+      this.cdr.detectChanges();
+    }, err => {
+      this.exceptionService.showError(err);
+    });
+  }
+
+  deleteAttachment(attachment: AttachmentDetails) {
+    attachment.DocumentMetadata.set('deleting', true);
+    this.attachmentService.deleteAttachment(attachment.DocumentMetadata.DocumentId).pipe(take(1)).subscribe(() => {
+      attachment.DocumentMetadata.set('deleting', false);
+      this.getAttachments();
+    })
+  }
+
+  downloadAttachment(attachmentId: string) {
+    this.productInformationService.getAttachmentUrl(attachmentId).pipe(take(1)).subscribe((url: string) => {
+      window.open(url, '_blank');
+    });
+  }
+
+  showProcessingOverlay() {
+    const customElement = this.renderer.createElement('div');
+    this.renderer.addClass(customElement, 'custom-overlay');
+    this.renderer.appendChild(document.body, customElement);
+    this.exceptionService.showInfo('COMMON.PROCESSING_MESSAGE', 'COMMON.PROCESSING_TITLE', null, ToasterPosition.BOTTOM_LEFT, 50000, false, false, true, false);
+  }
+
+  hideProcessingOverlay() {
+    const customElement = document.querySelector('.custom-overlay');
+    if (customElement) {
+      this.renderer.removeChild(document.body, customElement);
+      this.exceptionService.clearToast();
+    }
+  }
+
+  private translateQuoteStatusLabels(
+    statusMap: Record<string, { Key: string; DisplayText: string }>
+  ): void {
+    this.quoteSubscription.push(
+      this.translateService
+        .stream(Object.values(statusMap).map((status) => status.DisplayText))
+        .subscribe((translations) => {
+          this.quoteStatusLabelMap = Object.fromEntries(
+            Object.entries(statusMap).map(([statusKey, status]) => [
+              statusKey,
+              translations[status.DisplayText],
+            ])
+          );
+        })
+    );
+  }
+
+  openRequestChangesModal() {
+    // Toggle inside Angular's zone and force change detection. The click can be
+    // handled outside the zone, so simply mutating the flag would not re-render
+    // the modal until the next CD tick (e.g. an outside click), causing the
+    // modal to appear only after clicking elsewhere.
+    this.ngZone.run(() => {
+      this.showReqChangesModal = false;
+      this.cdr.detectChanges();
+
+      setTimeout(() => {
+        this.ngZone.run(() => {
+          this.showReqChangesModal = true;
+          this.cdr.detectChanges();
+        });
+      }, 10);
+    });
+  }
+
+  handleRequestChangesAction(event: any) {
+    if (event && event.action === 'close') {
+      this.showReqChangesModal = false;
+    }
+    if (event && event.action === 'submit') {
+      this.showReqChangesModal = false;
+
+      this.showViewCommentsComponent = false;
+      setTimeout(() => {
+        this.ngZone.run(() => {
+          this.showViewCommentsComponent = true;
+          this.cdr.detectChanges();
+        });
+      }, 100);
+    }
+  }
+
+  handleAddCommentsChanges(event: any) {
+    if (event && event.action === 'submit') {
+      this.showViewCommentsComponent = false;
+      setTimeout(() => {
+        this.ngZone.run(() => {
+          this.showViewCommentsComponent = true;
+          this.cdr.detectChanges();
+        });
+      }, 100);
+    }
+  }
+
+  handleViewCommentsAction(event: any) {
+    if (event && event.action === 'close') {
+      this.showReqChangesModal = false;
+    }
+  }
+
+  private loadCollaborationRequestFromState(quoteId: string): void {
+    // Get collaboration request from cached state (already fetched by CollaborationAuthGuard)
+    combineLatest([
+      this.userService.me(),
+      this.userService.isLoggedIn(),
+      this.collaborationService.getMyCollaborationRequest('Proposal', quoteId)
+    ]).pipe(
+      take(1)
+    ).subscribe(([user, isLoggedIn, request]) => {
+      this.isLoggedIn = isLoggedIn;
+
+        if (request) {
+          this.collaborationRequest = request;
+          this.currentUserId = get(user, 'Id');
+          this.isAnonymous = request.AuthenticationType === CollaborationAuthenticationType.Anonymous;
+          // Persist the AccessType so route guards can enforce restrictions.
+          this.dsrService.setAccessType(get(request, 'AccessType') || null);
+          // For authenticated collaboration, check against RecordOwner
+          if (isLoggedIn && !this.isAnonymous) {
+            const recordOwnerId = get(request, 'RecordOwner.Id');
+            this.isRecordOwner = recordOwnerId === this.currentUserId;
+            // Deny access if this logged-in user is not the intended recipient.
+            if (recordOwnerId && !this.isRecordOwner) {
+              this.router.navigate(['/dsr-unauthorized']);
+              return;
+            }
+          }
+
+        } else {
+          this.collaborationRequest = null;
+          this.isRecordOwner = true;
+          this.isAnonymous = false;
+          // No collaboration request — clear any stale access type restriction.
+          this.dsrService.setAccessType(null);
+        }
+
+        this.updateComputedProperties();
+        this.cdr.detectChanges();
+      });
+  }
+
+  private updateComputedProperties(): void {
+    // No collaboration request means full access for the user
+    if (!this.collaborationRequest) {
+      this.canManageLineItems = true;
+      this.canEditQuoteFields = true;
+      this.canShowCollaborationActions = true;
+      return;
+    }
+
+    // Only a New collaboration request is actionable. Once it is Accepted,
+    // Cancelled (or any other non-New status), the shared quote is shown in
+    // read-only mode with no collaboration actions.
+    if (get(this.collaborationRequest, 'Status') !== CollaborationStatus.New) {
+      this.canManageLineItems = false;
+      this.canEditQuoteFields = false;
+      this.canShowCollaborationActions = false;
+      return;
+    }
+
+    const accessType = get(this.collaborationRequest, 'AccessType');
+    const authType = get(this.collaborationRequest, 'AuthenticationType');
+    const hasLineItems = this.quoteLineItems$?.value && this.quoteLineItems$.value.length > 0;
+
+    // Line items management:
+    // Edit existing items: Record owner can edit unless access is AcceptReject
+    const canEditExistingItems = this.isRecordOwner && accessType !== CollaborationAccessType.AcceptReject;
+    // Add new items: Only record owner with full authenticated login access
+    const canAddNewItems = this.isRecordOwner && authType === CollaborationAuthenticationType.AuthenticatedWithLogin && accessType === CollaborationAccessType.FullEdit;
+    this.canManageLineItems = hasLineItems ? canEditExistingItems : canAddNewItems;
+
+    // Quote fields editability logic:
+    const isAnonymousWithLoggedInUser = authType === CollaborationAuthenticationType.Anonymous && this.isLoggedIn;
+    const isRestrictedAccess = accessType === CollaborationAccessType.RestrictedEdit || accessType === CollaborationAccessType.AcceptReject;
+    
+    // Collaboration quotes: Only editable with proper permissions
+    this.canEditQuoteFields = this.isLoggedIn && this.isRecordOwner && !isAnonymousWithLoggedInUser && !isRestrictedAccess;
+
+    // For Anonymous auth: Hide all actions once they log in
+    if (authType === CollaborationAuthenticationType.Anonymous && this.isLoggedIn) {
+      this.canShowCollaborationActions = false;
+    // For AuthenticatedWithLogin: Only show for record owner
+    } else if (authType === CollaborationAuthenticationType.AuthenticatedWithLogin && !this.isRecordOwner) {
+      this.canShowCollaborationActions = false;
+    // For other auth types: Show for all users
+    } else {
+      this.canShowCollaborationActions = true;
+    }
+  }
+
+  /**
+   * Releases the per-quote subscriptions. `getQuote()` calls this before reloading so the previous
+   * quote's streams are dropped without disturbing subscriptions that outlive a single quote.
+   */
+  private resetQuoteSubscriptions(): void {
+    if (this.attachemntSubscription)
+      this.attachemntSubscription.unsubscribe();
+    this.quoteSubscription.forEach(subscription => subscription.unsubscribe());
+    this.quoteSubscription = [];
+  }
+
+  ngOnDestroy() {
+    this.resetQuoteSubscriptions();
+    if (this.displayConfigSubscription) this.displayConfigSubscription.unsubscribe();
+
+    if (this.intimationModal) {
+      this.intimationModal.hide();
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "Digital Sales Room",
+  "short_name": "DSR",
+  "theme_color": "#0170ef",
+  "background_color": "#f8f9fa",
+  "display": "standalone",
+  "scope": "/",
+  "start_url": "/"
+}
